@@ -42,14 +42,14 @@ dependencies = [
 # CPU inference: ONNX Runtime plus the PyTorch fallback for .pth checkpoints
 # that cannot be exported (and for export itself).
 cpu = [
-  "onnxruntime==1.22.0",
-  "torch==2.7.1",
+  "onnxruntime==1.30.0",
+  "torch==2.14.0",
 ]
 # NVIDIA on Linux/Windows. onnxruntime-gpu 1.26.x is the CUDA 12.8 line; there is
 # no 1.26.3 release, so the pin is 1.26.0. Pair it with torch 2.7.1+cu126.
 cuda = [
-  "onnxruntime-gpu[cuda,cudnn]==1.26.0",
-  "torch==2.7.1",
+  "onnxruntime-gpu[cuda,cudnn]==1.30.0",
+  "torch==2.14.0",
 ]
 # Windows GPU for NVIDIA/AMD/Intel alike, over DirectX 12.
 dml = ["onnxruntime-directml==1.24.4"]
