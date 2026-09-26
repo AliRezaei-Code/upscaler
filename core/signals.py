@@ -101,7 +101,16 @@ def _make_handler(
         # underneath the handler cannot make it iterate a mutating list.
         cancel.set()
         pids = get_pids()
+        own = os.getpid()
         for pid in pids:
+            if pid == own:
+                # Our own pid. A provider that returns the parent — or the
+                # pool's own bookkeeping on a platform where `os.kill` is
+                # TerminateProcess — would take the UI down with the workers it
+                # meant to be stopping, with no traceback and no chance to
+                # finish the cancel. Measured: on windows-latest this killed
+                # the pytest process mid-suite, exit code 2, no output.
+                continue
             if pid <= 0:
                 # `os.kill(0, ...)` signals the caller's whole process group
                 # and a negative pid signals the group with that id, so a

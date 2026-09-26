@@ -56,7 +56,10 @@ def test_linux_falls_back_to_dot_local(
 ) -> None:
     monkeypatch.setattr(paths.sys, "platform", "linux")
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    # `Path.home` rather than $HOME: on Windows `expanduser` reads USERPROFILE
+    # and ignores HOME, so the env-var version of this test passes on Linux and
+    # fails on windows-latest with a path under the runner's profile.
+    monkeypatch.setattr(paths.Path, "home", classmethod(lambda _cls: tmp_path))
     assert data_dir() == tmp_path / ".local" / "share" / APP_NAME
     assert data_dir().is_dir()
 
@@ -74,7 +77,7 @@ def test_macos_uses_application_support(
 ) -> None:
     monkeypatch.setattr(paths.sys, "platform", "darwin")
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(paths.Path, "home", classmethod(lambda _cls: tmp_path))
     expected = tmp_path / "Library" / "Application Support" / APP_NAME
     assert data_dir() == expected
     assert config_dir() == expected

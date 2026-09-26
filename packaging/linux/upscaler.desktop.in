@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Upscaler
+GenericName=Video Upscaler
+Comment=Upscale a video with an open-source super-resolution model
+Exec=upscaler
+TryExec=upscaler
+# A themed name, not a path: the PNG is installed to
+# /usr/share/icons/hicolor/512x512/apps/upscaler.png, and a themed reference
+# keeps the entry working when the package is unpacked anywhere but also when it
+# is installed normally and the icon cache is rebuilt.
+Icon=@ICON@
+Terminal=false
+Categories=Video;AudioVideo;
+MimeType=video/mp4;video/x-matroska;video/quicktime;video/x-msvideo;video/mpeg;
+# Matches the basename of the frozen executable under /usr/lib/upscaler, so the
+# window and the launcher share one taskbar icon. If a Qt build ever reports a
+# different WM class, this is the one line to change: `xprop WM_CLASS` on the
+# running window prints the classname the bundle actually uses.
+StartupWMClass=upscaler
+Keywords=upscale;upscaler;super-resolution;super resolution;video;enhance;Real-ESRGAN;ffmpeg;GPU;
+X-AppVersion=@VERSION@

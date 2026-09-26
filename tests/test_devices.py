@@ -4,6 +4,11 @@ The `nvidia_proc` fixture is a byte-for-byte copy of this machine's
 `/proc/driver/nvidia/gpus/*/information`: three Tesla P40s, one of them with
 `Video BIOS: ??.??.??.??.??`. Everything asserted about NVIDIA enumeration is
 asserted against that real text, not against invented input.
+
+The directory names are the PCI bus addresses with `:` replaced by `-`, because
+a colon is illegal in a Windows path and this fixture is checked out on a
+Windows runner too. The addresses themselves are in the file *contents*, and
+they still parse and sort the same.
 """
 
 from __future__ import annotations
@@ -39,10 +44,20 @@ from core.devices import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
-NVIDIA_GLOB = str(FIXTURES / "nvidia_proc") + "/*/information"
-KFD_GLOB = str(FIXTURES / "kfd" / "node0") + "/properties"
-DRM_GLOB = str(FIXTURES / "drm") + "/card[0-9]*/device/vendor"
-ROCM_GLOB = str(FIXTURES / "rocm") + "/.info/version"
+NVIDIA_GLOB = str(FIXTURES / "nvidia_proc") + os.sep + "*" + os.sep + "information"
+KFD_GLOB = str(FIXTURES / "kfd" / "node0") + os.sep + "properties"
+# sysfs paths, so a POSIX separator: the fixture tree is matched with
+# `os.sep` on every platform, because the production glob is a sysfs path.
+DRM_GLOB = (
+    str(FIXTURES / "drm")
+    + os.sep
+    + "card[0-9]*"
+    + os.sep
+    + "device"
+    + os.sep
+    + "vendor"
+)
+ROCM_GLOB = str(FIXTURES / "rocm") + os.sep + ".info" + os.sep + "version"
 
 # The exact text the driver prints when it does not answer in time.
 DEGRADED_REASON = (
@@ -244,7 +259,9 @@ def test_enumeration_is_sorted_by_bus_address_not_glob_order(
 def test_a_driver_excluded_gpu_is_unusable(
     nvidia_fixture: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    excluded = tmp_path / "0000:09:00.0" / "information"
+    # No colon in the directory name: Windows reserves it for alternate data
+    # streams, and the address itself is in the file's contents.
+    excluded = tmp_path / "0000-09-00.0" / "information"
     excluded.parent.mkdir(parents=True)
     excluded.write_text(
         "Model: \t\t Tesla P40\n"
@@ -255,7 +272,7 @@ def test_a_driver_excluded_gpu_is_unusable(
     monkeypatch.setattr(
         devices_module,
         "NVIDIA_INFORMATION_GLOB",
-        str(tmp_path) + "/*/information",
+        str(tmp_path) + os.sep + "*" + os.sep + "information",
     )
     monkeypatch.setattr(devices_module, "_run_smi", _timeout)
     devices = probe_nvidia()
@@ -392,17 +409,21 @@ def test_a_file_read_that_never_answers_is_abandoned(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A wedged driver can block procfs, so the read is given a deadline too."""
-    for bus in ("0000:05:00.0", "0000:06:00.0"):
+    for bus in ("0000-05-00.0", "0000-06-00.0"):
         target = tmp_path / bus / "information"
         target.parent.mkdir(parents=True)
         target.write_text((FIXTURES / "nvidia_proc" / bus / "information").read_text())
-    blocked = tmp_path / "0000:01:00.0" / "information"
+    blocked = tmp_path / "0000-01-00.0" / "information"
     blocked.parent.mkdir(parents=True)
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no FIFO on this platform, so there is no way to block a read")
     os.mkfifo(blocked)  # a read on a FIFO with no writer blocks forever
 
     monkeypatch.setattr(devices_module, "PROBE_TIMEOUT_SECONDS", 0.5)
     monkeypatch.setattr(
-        devices_module, "NVIDIA_INFORMATION_GLOB", str(tmp_path) + "/*/information"
+        devices_module,
+        "NVIDIA_INFORMATION_GLOB",
+        str(tmp_path) + os.sep + "*" + os.sep + "information",
     )
     monkeypatch.setattr(devices_module, "_run_smi", _timeout)
     started = time.monotonic()
@@ -511,7 +532,9 @@ def test_intel_probe_is_empty_without_an_intel_card(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
-        devices_module, "DRM_VENDOR_GLOB", str(tmp_path / "card[0-9]*/vendor")
+        devices_module,
+        "DRM_VENDOR_GLOB",
+        str(tmp_path / ("card[0-9]*" + os.sep + "vendor")),
     )
     assert probe_intel() == []
 

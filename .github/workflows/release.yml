@@ -1,0 +1,750 @@
+# Build and publish a release, on a tag.
+#
+# `release.yml` deliberately repeats the lint, types and ci jobs from `ci.yml`
+# instead of chaining the two workflows. `needs` cannot cross a workflow
+# boundary — `workflow_run` and `workflow_call` give an ordering, not a
+# dependency edge, and a `needs:` on a job in another file is simply an
+# unresolved reference — so a release could otherwise be published from a commit
+# that never type-checked.
+#
+# The one thing this file must never do is publish a build nobody looked at:
+# every artefact is driven by `scripts/verify_install.py` before it is uploaded,
+# and the release body carries the result of that check for each target, taken
+# from `packaging/RELEASE_CHECKLIST.md` and from the reports the build jobs
+# upload. A claim in the release body that is not backed by a file in the
+# repository is a claim nobody can check.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# The default token cannot write a release, and the build jobs must not be able
+# to: `contents: write` is requested by the `release` job alone, below.
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  # --- the same gate the pull request passed, re-run on the tag -------------
+  # The build matrix takes tens of minutes. Running these three first means a
+  # commit that fails a type check never spends a runner on a 3 GB torch wheel.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the linter
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ruff does not import what it reads, so the linter needs no
+          # dependency tree at all — see the same step in ci.yml.
+          python -m pip install --upgrade pip
+          python -m pip install ruff
+      - name: ruff check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m ruff check .
+      - name: ruff format --check
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m ruff format --check .
+
+  types:
+    name: types
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the dependency tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The same install the test job in ci.yml does, for the same reason,
+          # and with the same one exception: `toga`'s Linux backend needs
+          # PyGObject, which is a source distribution with no wheel, so on a
+          # runner it fails the install before the checker has run. The comment
+          # on that step explains the whole of it; mypy needs the runtime
+          # dependencies and neither `cpu` nor `cuda` is among them, so there is
+          # no multi-gigabyte download on this path.
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python - --extras=dev <<'PYTHON'
+          import pathlib
+          import subprocess
+          import sys
+          import tomllib
+
+          project = tomllib.loads(
+              pathlib.Path("pyproject.toml").read_text()
+          )["project"]
+          wanted = list(project["dependencies"])
+          # The extras are named on the command line above, so pyproject.toml
+          # stays the only list of dependencies in the repository. An empty
+          # value means the base dependency set and no extra.
+          try:
+              raw = next(a for a in sys.argv if a.startswith("--extras="))
+          except StopIteration:
+              raise SystemExit(
+                  "name the extras: `--extras=cpu,dev`, or `--extras=` for none"
+              ) from None
+          for extra in [n for n in raw.removeprefix("--extras=").split(",") if n]:
+              wanted += project["optional-dependencies"][extra]
+
+
+          def name(requirement: str) -> str:
+              """`onnxruntime-gpu[cuda,cudnn]==1.26.0` -> `onnxruntime-gpu`."""
+              head = requirement.split("[")[0]
+              for separator in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+                  head = head.split(separator)[0]
+              return head.strip().lower()
+
+
+          def core_of(requirement: str) -> str:
+              """`toga==0.5.6` -> `toga-core==0.5.6`: the backend-less half."""
+              prefix, _, version = requirement.partition("==")
+              return f"{prefix}-core=={version}" if version else f"{prefix}-core"
+
+
+          linux = sys.platform.startswith("linux")
+          deferred = {"toga"} if linux else set()
+          plain = [r for r in wanted if name(r) not in deferred]
+          held = [r for r in wanted if name(r) in deferred]
+          command = [sys.executable, "-m", "pip", "install"]
+          if linux:
+              command += ["--extra-index-url", "https://download.pytorch.org/whl/cpu"]
+          subprocess.check_call([*command, *plain])
+          subprocess.check_call(
+              [
+                  sys.executable,
+                  "-m",
+                  "pip",
+                  "install",
+                  "--no-deps",
+                  *held,
+                  *(core_of(r) for r in held),
+              ]
+          )
+          subprocess.check_call(
+              [sys.executable, "-m", "pip", "install", "--no-deps", "-e", "."]
+          )
+          PYTHON
+      - name: mypy --strict
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m mypy core/ ui_pyside/ ui_toga/
+
+  ci:
+    name: ci (release gate)
+    needs: [lint, types]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report what ran
+        shell: bash
+        env:
+          LINT: ${{ needs.lint.result }}
+          TYPES: ${{ needs.types.result }}
+        run: |
+          set -euo pipefail
+          echo "lint: $LINT"
+          echo "types: $TYPES"
+
+  # --- the artefacts --------------------------------------------------------
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # Explicit, not a cross-product: there is no CUDA .deb for Windows and no
+      # .dmg for Linux, and a matrix of `os: [a,b] x target: [c,d]` would spend
+      # two runner-hours discovering that by exiting non-zero.
+      matrix:
+        include:
+          - { target: deb-cpu, os: ubuntu-latest, artifact: deb-cpu }
+          - { target: deb-cuda, os: ubuntu-latest, artifact: deb-cuda }
+          - { target: windows, os: windows-latest, artifact: win }
+          # arm64, like the CI leg: macos-13 queued indefinitely on this
+          # repository, and an .app for Apple silicon is the one worth signing.
+          - { target: macos, os: macos-14, artifact: mac }
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # The PyInstaller entry point. Both front-ends ship from the same frozen
+      # `ui_pyside/main.py`; the Toga package is built separately by Briefcase
+      # and is not in this matrix, because it is not releasable yet (see
+      # packaging/RELEASE_CHECKLIST.md).
+      - name: Install the verification environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Two things are needed from Python on this runner, and they are
+          # different things.
+          #
+          # The build scripts make their own throwaway virtualenv and pin
+          # PyInstaller inside it, so a build is a function of pyproject.toml
+          # and not of whatever the runner had installed. What they want from
+          # here is only a base interpreter at the version this release is
+          # pinned to, and they prefer `.venv/bin/python` when it exists.
+          #
+          # `scripts/verify_install.py` runs from this environment. It imports
+          # the project's own modules — `core.devices`, `core.pipeline`,
+          # `core.ffmpeg` — so the project has to be importable, and it builds
+          # its own two-times ONNX graph with `onnx` when it is not handed a
+          # model. It then *loads* that graph to find an IR version the runtime
+          # accepts, which is why the `cpu` extra is here and not just the base
+          # set: that is the verifier's own runtime, and it is not the bundle's.
+          # The frozen application carries its own engine, which is the thing
+          # being verified.
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -V
+          .venv/bin/python - --extras=cpu <<'PYTHON'
+          import pathlib
+          import subprocess
+          import sys
+          import tomllib
+
+          project = tomllib.loads(
+              pathlib.Path("pyproject.toml").read_text()
+          )["project"]
+          wanted = list(project["dependencies"])
+          # The extras are named on the command line above, so pyproject.toml
+          # stays the only list of dependencies in the repository. An empty
+          # value means the base dependency set and no extra.
+          try:
+              raw = next(a for a in sys.argv if a.startswith("--extras="))
+          except StopIteration:
+              raise SystemExit(
+                  "name the extras: `--extras=cpu,dev`, or `--extras=` for none"
+              ) from None
+          for extra in [n for n in raw.removeprefix("--extras=").split(",") if n]:
+              wanted += project["optional-dependencies"][extra]
+
+
+          def name(requirement: str) -> str:
+              """`onnxruntime-gpu[cuda,cudnn]==1.26.0` -> `onnxruntime-gpu`."""
+              head = requirement.split("[")[0]
+              for separator in ("==", ">=", "<=", "~=", "!=", ">", "<"):
+                  head = head.split(separator)[0]
+              return head.strip().lower()
+
+
+          def core_of(requirement: str) -> str:
+              """`toga==0.5.6` -> `toga-core==0.5.6`: the backend-less half."""
+              prefix, _, version = requirement.partition("==")
+              return f"{prefix}-core=={version}" if version else f"{prefix}-core"
+
+
+          # The same one exception as everywhere else: `toga`'s Linux backend
+          # needs PyGObject, a source distribution with no wheel, so a plain
+          # resolution fails the install on a runner. The frozen app is the Qt
+          # front-end and never imports Toga, so the backend chain is left out
+          # here exactly as packaging/linux/build-deb.sh leaves it out of the
+          # bundle.
+          #
+          # The extra index is for the Linux leg only, and it is load-bearing:
+          # `torch==2.7.1` on PyPI for Linux x86-64 is the CUDA wheel, which
+          # drags in the whole nvidia-* stack for a runner with no GPU. The CPU
+          # index publishes `2.7.1+cpu`, and PEP 440 sorts a local version
+          # above the bare one, so pip prefers it and `==2.7.1` is still
+          # satisfied. On macOS and Windows the public wheel is already
+          # CPU-only, so the flag changes nothing there.
+          linux = sys.platform.startswith("linux")
+          deferred = {"toga"} if linux else set()
+          plain = [r for r in wanted if name(r) not in deferred]
+          held = [r for r in wanted if name(r) in deferred]
+          command = [sys.executable, "-m", "pip", "install"]
+          if linux:
+              command += ["--extra-index-url", "https://download.pytorch.org/whl/cpu"]
+          subprocess.check_call([*command, *plain])
+          subprocess.check_call(
+              [
+                  sys.executable,
+                  "-m",
+                  "pip",
+                  "install",
+                  "--no-deps",
+                  *held,
+                  *(core_of(r) for r in held),
+              ]
+          )
+          subprocess.check_call(
+              [sys.executable, "-m", "pip", "install", "--no-deps", "-e", "."]
+          )
+          PYTHON
+          version=$(.venv/bin/python -c \
+            "import pathlib,tomllib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          echo "version=$version"
+          echo "UPSCALER_VERSION=$version" >> "$GITHUB_ENV"
+
+      # --- Linux ------------------------------------------------------------
+      - name: Install dpkg build tools
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `dpkg-deb` is part of dpkg and is on the image; `fakeroot` and the
+          # lintian-free build only need dpkg-dev. Pinned by name rather than
+          # by version because the image's own dpkg is the one that has to be
+          # able to read the .deb this job produces.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev fakeroot
+          dpkg-deb --version | head -1
+
+      # --- Windows ----------------------------------------------------------
+      - name: Install Inno Setup 6.3.0
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Inno Setup has no package manager entry that can be pinned, so the
+          # release is pinned instead: a fixed release asset, checked against a
+          # SHA-256 recorded here. `choco install innosetup` would install
+          # whatever is newest, which is how an installer that stops compiling
+          # a script appears in a release with no change to this repository.
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_3_0/innosetup-6.3.0.exe'
+          $expected = 'caaaaf91d43b2878bbb63ae90aa2f0e144b5ec85a75f19e423e4fc4ddc52e157'
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.3.0.exe'
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $actual = (Get-FileHash -Path $installer -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            throw "Inno Setup installer is sha256 $actual, expected $expected"
+          }
+          # Installed to a path with no spaces on purpose: Inno's /DIR switch
+          # and Start-Process's argument quoting do not agree about a path with
+          # spaces in it, and ISCC.exe is then passed to the build script with
+          # -InnoPath anyway.
+          $dir = 'C:\inno6'
+          $process = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @(
+            '/SP-', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir"
+          )
+          if ($process.ExitCode -ne 0) {
+            throw "Inno Setup installer exited $($process.ExitCode)"
+          }
+          $iscc = Join-Path $dir 'ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe is not in $dir" }
+          Write-Host "Inno Setup installed at $dir"
+
+      # --- macOS ------------------------------------------------------------
+      - name: Install create-dmg
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # create-dmg is a shell script distributed through Homebrew, and a
+          # Homebrew formula cannot be pinned by hash. The resolved version is
+          # printed into the build log instead, and what actually protects the
+          # artefact is that `scripts/verify_install.py` opens the .dmg's
+          # bundle afterwards.
+          brew install create-dmg
+          brew list --versions create-dmg
+
+      # --- build ------------------------------------------------------------
+      - name: Build the Debian package (fat, CPU runtime bundled)
+        id: build
+        if: matrix.target == 'deb-cpu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Progress goes to stderr and the artefact's path to stdout, so the
+          # two streams are kept apart: only the `artefact:` line is parsed.
+          bash packaging/linux/build-deb.sh --fat > deb-fatalogue.txt
+          cat deb-fatalogue.txt
+          artefact=$(sed -n 's/^artefact: //p' deb-fatalogue.txt | tail -1)
+          if [ -z "$artefact" ] || [ ! -f "$artefact" ]; then
+            echo "::error::build-deb.sh did not report a readable artefact"
+            exit 1
+          fi
+          echo "artefact_path=$artefact" >> "$GITHUB_OUTPUT"
+
+      - name: Build the Debian package (slim, runtime provisioned on first run)
+        id: build
+        if: matrix.target == 'deb-cuda'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash packaging/linux/build-deb.sh --slim > deb-slimtologue.txt
+          cat deb-slimtologue.txt
+          artefact=$(sed -n 's/^artefact: //p' deb-slimtologue.txt | tail -1)
+          if [ -z "$artefact" ] || [ ! -f "$artefact" ]; then
+            echo "::error::build-deb.sh did not report a readable artefact"
+            exit 1
+          fi
+          echo "artefact_path=$artefact" >> "$GITHUB_OUTPUT"
+
+      - name: Build the Windows installer
+        id: build
+        if: matrix.target == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # PowerShell, not bash: the script is PowerShell and sets
+          # $ErrorActionPreference='Stop'. `pwsh -File` rather than a bare
+          # path so the runner's shell resolution cannot pick up a shim.
+          pwsh -NoProfile -NonInteractive -File packaging/windows/build-exe.ps1 \
+            -Version "$UPSCALER_VERSION" -OutDir dist -InnoVersion 6.3.0 \
+            -InnoPath 'C:\inno6\ISCC.exe' | tee win-tologue.txt
+          artefact="dist/upscaler_${UPSCALER_VERSION}_windows-amd64-setup.exe"
+          if [ ! -f "$artefact" ]; then
+            echo "::error::build-exe.ps1 did not produce $artefact"
+            ls -la dist || true
+            exit 1
+          fi
+          echo "artefact_path=$artefact" >> "$GITHUB_OUTPUT"
+
+      - name: Build the macOS disk image
+        id: build
+        if: matrix.target == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash packaging/macos/build-dmg.sh --out-dir dist \
+            --version "$UPSCALER_VERSION" > dmg-tologue.txt
+          cat dmg-tologue.txt
+          artefact="dist/upscaler_${UPSCALER_VERSION}_macos.dmg"
+          if [ ! -f "$artefact" ]; then
+            echo "::error::build-dmg.sh did not produce $artefact"
+            ls -la dist || true
+            exit 1
+          fi
+          echo "artefact_path=$artefact" >> "$GITHUB_OUTPUT"
+
+      - name: Report the artefact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artefact="${{ steps.build.outputs.artefact_path }}"
+          size=$(wc -c < "$artefact")
+          echo "artefact: $artefact ($size bytes)"
+          # GitHub refuses a release asset of 2 GiB or more, and refuses it at
+          # upload time with an error that names no job and no file. The
+          # release job checks every artefact again, before the release
+          # exists; this is only here so a build that is already too big fails
+          # in the job that built it.
+          if [ "$size" -ge 2147483648 ]; then
+            echo "::error::$artefact is $((size / 1073741824)) GiB; GitHub's per-asset limit is 2 GiB"
+            exit 1
+          fi
+
+      # --- verify -----------------------------------------------------------
+      - name: Verify the Debian package
+        if: matrix.target == 'deb-cpu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `dpkg -i` needs root and this runner's package database is not the
+          # one the .deb was built for, so the package is unpacked with
+          # `dpkg-deb -x` and the launcher inside the extracted tree is what
+          # gets driven. That is also how a tool that is not apt would consume
+          # the artefact, and it is the only way to run this check on a runner
+          # without a desktop.
+          root="$RUNNER_TEMP/deb-root"
+          mkdir -p "$root"
+          dpkg-deb -x "${{ steps.build.outputs.artefact_path }}" "$root"
+          find "$root" -maxdepth 3 -name 'upscaler*' -print | head
+          .venv/bin/python scripts/verify_install.py --app-dir "$root" \
+            > "verify-${{ matrix.artifact }}.log" 2>&1 || code=$?
+          code=${code:-0}
+          { echo "target: ${{ matrix.target }}"; echo "exit code: $code"; tail -40 "verify-${{ matrix.artifact }}.log"; } \
+            > "verify-${{ matrix.artifact }}.txt"
+          cat "verify-${{ matrix.artifact }}.txt"
+          exit "$code"
+
+      - name: Verify the slim Debian package
+        if: matrix.target == 'deb-cuda'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/deb-root"
+          mkdir -p "$root"
+          dpkg-deb -x "${{ steps.build.outputs.artefact_path }}" "$root"
+          # `--skip-job`, and the reason is the point of this target: the slim
+          # package ships no inference engine at all, on purpose, because the
+          # CUDA stack is three gigabytes and the Runtimes tab provisions it on
+          # first run. A runner cannot exercise that path — it has no GPU and
+          # no desktop — so the honest check is that the bundle launches, and
+          # the run is recorded as launch-only rather than as a full pass.
+          .venv/bin/python scripts/verify_install.py --app-dir "$root" --skip-job \
+            > "verify-${{ matrix.artifact }}.log" 2>&1 || code=$?
+          code=${code:-0}
+          { echo "target: ${{ matrix.target }}"; echo "exit code: $code";
+            echo "note: launch-only; the slim package ships no inference engine by design";
+            tail -40 "verify-${{ matrix.artifact }}.log"; } \
+            > "verify-${{ matrix.artifact }}.txt"
+          cat "verify-${{ matrix.artifact }}.txt"
+          exit "$code"
+
+      - name: Verify the Windows installer
+        if: matrix.target == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The unpacked PyInstaller bundle, not the Inno Setup .exe: the .exe is
+          # an installer that wants a user to click through it, and a runner has
+          # no user. The bundle inside it is the same bytes, and it is what
+          # actually runs.
+          #
+          # `build-exe.ps1` keeps its build tree in `build\windows\dist` and puts
+          # only the setup .exe in `dist`, so `dist` alone would find nothing.
+          # Both roots are searched rather than one path being hard-coded, so a
+          # change to the script's internal layout does not turn into a failed
+          # release — and a miss is an error rather than an empty run, because
+          # an artefact that was never verified must not be published.
+          bundle=$(find dist build/windows/dist -maxdepth 1 -type d -name 'upscaler' -print -quit 2>/dev/null || true)
+          if [ -z "$bundle" ]; then
+            echo "::error::no unpacked PyInstaller bundle to verify"
+            find dist build -maxdepth 3 -print 2>/dev/null || true
+            exit 1
+          fi
+          echo "verifying $bundle"
+          .venv/bin/python scripts/verify_install.py --app-dir "$bundle" \
+            > "verify-${{ matrix.artifact }}.log" 2>&1 || code=$?
+          code=${code:-0}
+          { echo "target: ${{ matrix.target }}"; echo "exit code: $code"; tail -40 "verify-${{ matrix.artifact }}.log"; } \
+            > "verify-${{ matrix.artifact }}.txt"
+          cat "verify-${{ matrix.artifact }}.txt"
+          exit "$code"
+
+      - name: Verify the macOS disk image
+        if: matrix.target == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The .app that goes into the .dmg. Mounting the image needs a
+          # desktop, and `build-dmg.sh` leaves its PyInstaller output in
+          # `build/macos/dist` while `dist` holds only the finished .dmg, so
+          # the bundle is looked for where the build actually puts it and
+          # `dist` is searched as well in case that changes.
+          bundle=$(find build/macos/dist dist -maxdepth 1 -name '*.app' -print -quit 2>/dev/null || true)
+          if [ -z "$bundle" ]; then
+            echo "::error::no .app bundle to verify"
+            find dist build -maxdepth 3 -print 2>/dev/null || true
+            exit 1
+          fi
+          echo "verifying $bundle"
+          .venv/bin/python scripts/verify_install.py --executable "$bundle" \
+            > "verify-${{ matrix.artifact }}.log" 2>&1 || code=$?
+          code=${code:-0}
+          { echo "target: ${{ matrix.target }}"; echo "exit code: $code"; tail -40 "verify-${{ matrix.artifact }}.log"; } \
+            > "verify-${{ matrix.artifact }}.txt"
+          cat "verify-${{ matrix.artifact }}.txt"
+          exit "$code"
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # The `installer-` prefix is what lets the release job download the
+          # four installers with one glob and the four reports with another, so
+          # `dist/*` can never pick up a report and try to attach it to the
+          # release.
+          name: installer-${{ matrix.artifact }}
+          path: ${{ steps.build.outputs.artefact_path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the verification report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-${{ matrix.artifact }}
+          path: verify-${{ matrix.artifact }}.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  # --- publish --------------------------------------------------------------
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    needs: [build, lint, types, ci]
+    permissions:
+      contents: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The release body is assembled from a file in the repository, so the
+          # release can only claim what a commit says.
+          persist-credentials: false
+
+      - name: Download the installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: installer-*
+          # `merge-multiple` is the load-bearing setting here. Without it each
+          # artefact is extracted into its own subdirectory, `dist/*` expands
+          # to `dist/installer-deb-cpu` and friends, and `gh release create`
+          # is handed a directory to upload instead of a file.
+          merge-multiple: true
+
+      - name: Download the verification reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: reports
+          pattern: verify-*
+          merge-multiple: true
+
+      - name: Check the artefacts arrived, and are small enough to upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `actions/download-artifact` has no `if-no-files-found` input — it
+          # is an `upload-artifact` input, and passing it here would be an
+          # unknown key that GitHub warns about and then ignores. So the
+          # emptiness guard that guard would have provided is written out here,
+          # and it is the check that matters: with an empty `dist/`, the glob
+          # below expands to nothing, `gh release create` publishes an asset
+          # list of zero, and every remaining check passes vacuously.
+          count=$(find dist -type f | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::dist/ is empty; no artefact arrived and every check below would pass vacuously"
+            exit 1
+          fi
+          echo "checking $count artefact(s) against GitHub's 2 GiB per-asset limit"
+          find dist -type f -print0 | xargs -0 -r stat -c '%s %n' | while read -r sz name; do
+            if [ "$sz" -ge 2147483648 ]; then
+              echo "::error::Asset $name is $((sz / 1073741824)) GiB; GitHub's per-asset limit is 2 GiB"
+              exit 1
+            fi
+          done
+          # The four targets this release is built from. If a build job stops
+          # uploading, or a matrix entry is added without a verify step, the
+          # release stops here rather than shipping quietly incomplete. The
+          # count is checked as well as the names: four names that are not four
+          # files means an extra thing got into `dist/`, and `dist/*` is handed
+          # to `gh release create` as-is.
+          for target in deb-cpu deb-cuda win mac; do
+            if [ ! -f "reports/verify-$target.txt" ]; then
+              echo "::error::no verify_install.py report for $target; the release body cannot claim a gate that did not run"
+              exit 1
+            fi
+          done
+          if [ "$count" -ne 4 ]; then
+            echo "::error::dist/ holds $count file(s); a release is four artefacts, one per target"
+            find dist -type f -print
+            exit 1
+          fi
+          ls -la dist reports
+
+      - name: Write the release body
+        shell: bash
+        run: |
+          set -euo pipefail
+          checklist=packaging/RELEASE_CHECKLIST.md
+          if [ ! -f "$checklist" ]; then
+            echo "::error::$checklist is missing; the release body is assembled from it"
+            exit 1
+          fi
+          # The one line a maintainer edits when the gate has been run. It is
+          # copied verbatim, so it cannot claim a gate that was skipped: the
+          # text either says it was run or it does not.
+          gate=$(grep -m1 '^- Manual GPU gate:' "$checklist" || true)
+          if [ -z "$gate" ]; then
+            echo "::error::$checklist has no '- Manual GPU gate:' line to record the result in"
+            exit 1
+          fi
+          {
+            echo "## What was verified on this release"
+            echo
+            echo "Each artefact below was unpacked and driven by \`scripts/verify_install.py\`,"
+            echo "which launches the frozen app headless, asserts exactly one window opens,"
+            echo "runs a one-frame job and checks the output really is a video with an audio"
+            echo "stream. The exit code is the script's own."
+            echo
+            echo '| Target | verify_install.py | Reported |'
+            echo '| --- | --- | --- |'
+            for target in deb-cpu deb-cuda win mac; do
+              code=$(sed -n 's/^exit code: //p' "reports/verify-$target.txt" | head -1)
+              note=$(grep -m1 '^note: ' "reports/verify-$target.txt" | sed 's/^note: //' || true)
+              if [ -z "$code" ]; then
+                echo "::error::reports/verify-$target.txt has no 'exit code:' line, so the release body cannot state its result"
+                exit 1
+              fi
+              if [ "$code" = "0" ]; then
+                verdict="pass"
+              else
+                verdict="**FAIL (exit $code)**"
+              fi
+              echo "| \`$target\` | $verdict | ${note:-full run} |"
+            done
+            echo
+            echo "## The manual GPU gate"
+            echo
+            echo "$gate"
+            echo
+            echo "\`scripts/verify_gpu.py\` is the gate: it runs the real exported"
+            echo "RealESRGAN graph on every accelerator and fails when ONNX Runtime silently"
+            echo "fell back to the CPU, or when the result differs from a CPU reference of the"
+            echo "same graph by more than the tolerance. It cannot run on a CI runner, which"
+            echo "has no accelerator, which is why its result is recorded here by hand."
+            echo
+            echo "## Not in this release"
+            echo
+            echo "* The Toga front-end. It is packaged by Briefcase from"
+            echo "  \`[tool.briefcase]\`, not by this workflow, and it is not releasable yet"
+            echo "  for two reasons that were measured rather than assumed:"
+            echo "  \`toga-gtk\` 0.5.6 imports \`gi.events\`, which needs PyGObject >= 3.50"
+            echo "  (Ubuntu 22.04 ships 3.42, 24.04 ships 3.48), so a Linux package has to"
+            echo "  carry a PyGObject built from source; and Briefcase's Linux builder"
+            echo "  uses the system python3, which this project's \`requires-python >= 3.11\`"
+            echo "  rules out on 22.04. The PySide6 front-end is the supported one here."
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Publish the release
+        shell: bash
+        env:
+          # The workflow only triggers on an existing tag push, so `gh release
+          # create` is never in a position to create the tag itself.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # `--prerelease`, and this is the flag to change first. Before it may
+          # be removed, a maintainer has to have run `scripts/verify_gpu.py` on
+          # real hardware for every backend this release claims — at minimum a
+          # real NVIDIA or AMD or Intel GPU, and real Windows and real macOS
+          # machines, because the DirectML and CoreML execution providers are
+          # only ever exercised there — and recorded the outcome on the
+          # '- Manual GPU gate:' line in packaging/RELEASE_CHECKLIST.md in the
+          # same commit as this tag. A build job on a runner with no GPU proves
+          # the bundle is not broken; it proves nothing about whether the CUDA,
+          # DirectML or CoreML providers work.
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --generate-notes \
+            --notes-file release-notes.md \
+            --prerelease \
+            --title "Upscaler $GITHUB_REF_NAME"

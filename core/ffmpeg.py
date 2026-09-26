@@ -732,9 +732,23 @@ def _as_text(value: str | bytes | None) -> str | None:
 
 
 def _tail(stream: str | None) -> str:
+    """The most useful part of an ffmpeg failure: its first lines *and* its last.
+
+    ffmpeg prints the reason first — "Unknown encoder", "Auto encoder selection
+    failed", "Incompatible pixel format" — and the progress bars last, which
+    carry no information. A tail-only message therefore hides the cause, which
+    is how a macOS encode failure on ffmpeg 9.0.1 arrived as nothing more
+    informative than "Error sending frames to consumers: Invalid argument" with
+    the sentence that explained it cut off above the window.
+    """
     if not stream:
         return "(ffmpeg printed nothing)"
-    return stream[-STDERR_TAIL_CHARS:].strip()
+    text = stream.strip()
+    if len(text) <= STDERR_TAIL_CHARS:
+        return text
+    head = text[: STDERR_TAIL_CHARS // 2].strip()
+    tail = text[-(STDERR_TAIL_CHARS // 2) :].strip()
+    return f"{head}\n… {len(text) - STDERR_TAIL_CHARS} characters elided …\n{tail}"
 
 
 def _report(log: Callable[[str], None] | None, message: str) -> None:
