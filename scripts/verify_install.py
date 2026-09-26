@@ -179,7 +179,11 @@ def resolve_bundle(app_dir: Path, executable: Path | None) -> tuple[Path, Path]:
     for exe_name in _executable_names():
         for payload, runtime, description in candidates:
             executable_path = payload / exe_name
-            tried.append(str(executable_path))
+            # The description goes in the failure message, not only in the
+            # success line: to a reader holding an artefact, these paths all
+            # look the same, and "which shape did you unpack" is the question
+            # the error has to answer.
+            tried.append(f"{executable_path}  ({description})")
             if executable_path.is_file() and os.access(executable_path, os.X_OK):
                 note(f"bundle      : {executable_path} ({description})")
                 return executable_path, runtime
@@ -188,7 +192,7 @@ def resolve_bundle(app_dir: Path, executable: Path | None) -> tuple[Path, Path]:
         # what puts the bundle's libraries ahead of the host's.
         note(f"bundle      : {launcher} (the packaged launcher)")
         return launcher, root / "usr" / "lib" / "upscaler"
-    tried.append(str(launcher))
+    tried.append(f"{launcher}  (the packaged launcher)")
 
     raise VerificationError(
         f"no frozen executable under {root}. Looked for:\n  "

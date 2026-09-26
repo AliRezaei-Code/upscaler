@@ -151,8 +151,13 @@ def _transfer(
 
             def report() -> None:
                 """Send this attempt's progress; closes over the loop's counters."""
-                elapsed = time.monotonic() - started
-                rate = written / elapsed if elapsed > 0 else 0.0
+                # Windows' `time.monotonic` has about 15 ms of resolution, so a
+                # fast local transfer can start and finish inside one tick and
+                # report 0 B/s - a progress bar that stops at the beginning
+                # rather than at the end. A millisecond floor is short enough
+                # to be meaningless and long enough to be a rate.
+                elapsed = max(time.monotonic() - started, 1e-3)
+                rate = written / elapsed
                 done = existing + written
                 _emit(
                     emit,

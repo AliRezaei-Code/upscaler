@@ -593,7 +593,15 @@ def test_a_short_encode_is_refused(tmp_path: Path) -> None:
     starts; this covers the other route to the same outcome, where the frames
     are fine and the demuxer still loses some.
     """
+    from core.ffmpeg import find_ffprobe
     from tests.support import write_frame
+
+    if find_ffprobe() is None:
+        # The read-back is skipped without ffprobe, because the alternative is
+        # a full decode of the output - which is the one cost it exists to
+        # avoid. imageio-ffmpeg ships ffmpeg and no ffprobe, so this is the
+        # Windows runner's situation, and the test has no premise there.
+        pytest.skip("no ffprobe on this host, so the encode read-back is skipped")
 
     frames = tmp_path / "frames"
     write_frame(frames / "frame_00000000.png")
@@ -610,7 +618,11 @@ def test_a_short_encode_is_refused(tmp_path: Path) -> None:
 
 
 def test_a_correct_encode_passes_the_same_check(tmp_path: Path) -> None:
+    from core.ffmpeg import find_ffprobe
     from tests.support import write_frame
+
+    if find_ffprobe() is None:
+        pytest.skip("no ffprobe on this host, so the encode read-back is skipped")
 
     frames = tmp_path / "frames"
     for index in range(4):

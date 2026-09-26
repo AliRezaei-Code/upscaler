@@ -99,10 +99,16 @@ class TestBundleResolution:
         message = str(excinfo.value)
         assert "no frozen executable" in message
         assert "Looked for" in message
-        # A bundle is looked for in three layouts, and the message has to show
-        # all three or the reader cannot tell which packaging shape they have.
-        assert "upscaler/upscaler" in message
-        assert "usr/lib/upscaler" in message
+        # Every layout is named, and by its description rather than by its path:
+        # the paths carry the platform's separator and the executable's suffix
+        # (`upscaler.exe` on Windows), so asserting on them only passes on POSIX.
+        for description in (
+            "a PyInstaller --onedir bundle",
+            "a dist directory holding the bundle",
+            "a dpkg-deb -x root",
+            "a macOS .app bundle",
+        ):
+            assert description in message, description
 
     def test_an_onedir_bundle_is_found(self, tmp_path: Path) -> None:
         bundle = tmp_path / "upscaler"
@@ -181,21 +187,39 @@ class TestIsolation:
 
         env = smoke.isolated_environment(tmp_path, bundle)
 
-        assert env["LD_LIBRARY_PATH"].startswith(str(bundle))
+        # The variable that carries a dynamic loader's search path is spelled per
+        # platform, and on Windows there is none: the bundle's own directory
+        # goes on PATH instead, because the bundle's ffmpeg.exe lives at its
+        # root rather than in a `bin` subdirectory.
+        if sys.platform == "win32":
+            assert env["PATH"].startswith(str(bundle))
+            assert "LD_LIBRARY_PATH" not in env
+        elif sys.platform == "darwin":
+            assert env["DYLD_LIBRARY_PATH"].startswith(str(bundle))
+        else:
+            assert env["LD_LIBRARY_PATH"].startswith(str(bundle))
         # The bundle's ffmpeg has to win over any ffmpeg on PATH, or the smoke
         # would silently test a different encoder from the one the package ships.
         if sys.platform != "win32":
             assert env["PATH"].startswith(str(bundle / "bin"))
 
-    def test_a_bundle_with_no_bin_leaves_path_alone(self, tmp_path: Path) -> None:
+    def test_a_bundle_with_no_bin_gains_no_dead_binary_entry(
+        self, tmp_path: Path
+    ) -> None:
         # Nothing to point at: a bundle with no `bin` directory has no ffmpeg of
         # its own, and PATH is left as it was rather than gaining a dead entry.
+        # On Windows the bundle's *root* is the binary directory, so there the
+        # root is prepended and that is the same promise kept differently.
         bundle = tmp_path / "bundle"
         bundle.mkdir()
 
         env = smoke.isolated_environment(tmp_path, bundle)
 
-        assert env["PATH"] == os.environ.get("PATH", "")
+        if sys.platform == "win32":
+            assert env["PATH"].startswith(str(bundle))
+        else:
+            assert env["PATH"] == os.environ.get("PATH", "")
+            assert "LD_LIBRARY_PATH" in env
 
 
 class TestGeneratedModel:
