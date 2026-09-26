@@ -41,7 +41,7 @@ achievable today are listed as such rather than quietly dropped.
 | Linux | any / none | `CPUExecutionProvider` | Always available; `scale` inference and tiling keep it usable on large frames |
 | Windows | NVIDIA, AMD, Intel | `DmlExecutionProvider` | `onnxruntime-directml==1.24.4` over DirectX 12. Memory-pattern and parallel-execution optimisations must be disabled (the app sets `enable_mem_pattern=False`, `ORT_SEQUENTIAL`); op set ceiling is opset 20, and the exporter targets opset 17 |
 | Windows | any / none | `CPUExecutionProvider` | Fallback when no DirectX 12 device is present |
-| macOS 12+ | Apple | `CoreMLExecutionProvider` | `ModelFormat: MLProgram`, which requires macOS 12 or newer. The 16 supported ops cover the Real-ESRGAN family; the exporter asserts every emitted op against that allow-list |
+| macOS 12+ | Apple | `CoreMLExecutionProvider` | `ModelFormat: MLProgram`, which requires macOS 12 or newer. The supported-op table is the contract: the exporter asserts every emitted op against it, and **rewrites the graph when PyTorch emits something the table cannot run** — see below |
 | macOS < 12 | Apple | `CoreMLExecutionProvider` (`NeuralNetwork` format) | One automatic retry, then the chain continues |
 | macOS 14+, Apple silicon | Apple | torch `mps` | Only when CoreML is unavailable; PyTorch requires macOS 14.0+ and an MPS-capable device |
 | macOS | any | `CPUExecutionProvider` | Final fallback |
@@ -51,6 +51,31 @@ CPU** when their runtime cannot load, so the app never trusts a provider list
 it did not verify: `scripts/verify_gpu.py` compares every device's output
 against a CPU reference and fails when the max absolute difference exceeds
 `2e-3`.
+
+### Two exporter facts, measured rather than assumed
+
+`RealESRGAN_x4plus` is the most-supported model in the world, and this app
+still has to fix its exported graph twice before Apple's provider will take it.
+Both facts were measured on the pinned toolchain (torch 2.7.1, ONNX Runtime
+1.22) rather than taken from documentation:
+
+1. **PyTorch exports `pixel_shuffle` as `DepthToSpace(mode="CRD")`** — at every
+   opset from 11 to 20, static spatial dims or not. The CoreML EP's MLProgram
+   table supports "Only DCR mode DepthToSpace"; its NeuralNetwork column
+   accepts CRD but only for a fixed input shape. So a CRD node either fails on
+   the fast path or forces every macOS export onto the slower fallback. The
+   exporter rewrites each CRD node into the equivalent
+   `Reshape → Transpose(perm=[0,1,4,2,5,3]) → Reshape`, which is numerically
+   identical — a test asserts `array_equal` against the unrewritten graph.
+2. **A `Constant` node is not in the CoreML table either.** The real
+   `RealESRGAN_x4plus` graph contains one, and the allow-list check refused the
+   model's own export. `Constant` values are folded into initializers, which
+   are not nodes at all and which every provider handles.
+
+Exports are cached per checkpoint hash, frame size, opset and an
+`EXPORT_REVISION` counter, so a change to the exporter cannot leave a stale
+graph behind. A cached export at 288×384 of the 23-block x4plus model takes
+minutes on CPU the first time and is instant afterwards.
 
 ## Installing from a release
 
