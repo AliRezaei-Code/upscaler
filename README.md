@@ -109,10 +109,20 @@ uv pip install --python .venv/bin/python "toga==0.5.6" "toga-gtk==0.5.6" --no-de
 ```
 
 On Linux, `toga-gtk` is the packaged default because the Toga docs describe the
-GTK 3 backend as the more mature of the two; the `.deb` declares
-`Depends: python3-gi, gir1.2-gtk-3.0, python3-gi-cairo` and lets `apt` supply
-it. `toga-qt` exists and needs no PyGObject, but is documented as an
-early-stage backend, so it is not the default.
+GTK 3 backend as the more mature of the two; `toga-qt` exists and needs no
+PyGObject, but is documented as an early-stage backend, so it is not the
+default.
+
+**`toga-gtk` 0.5.6 needs PyGObject ≥ 3.50, and `apt` does not always have it.**
+`toga_gtk/libs/gtk.py` imports `gi.events`, which arrived in PyGObject 3.50 —
+after Ubuntu 22.04's 3.42 and Ubuntu 24.04's 3.48. So the Toga `.deb` cannot
+simply declare `Depends: python3-gi` and hope: on those releases the front-end
+cannot import at all. The package therefore declares the GTK runtime libraries
+(`gir1.2-gtk-3.0`, `libgtk-3-0`) and carries a PyGObject built from source, which
+needs `libgirepository-2.0-dev` and `libcairo2-dev` at *build* time. This
+repository's own dev machine has no root, so the Toga front-end is verified here
+through the `toga-dummy` backend and its GTK window is verified by CI and by the
+packaging job, not by a local screenshot.
 
 ### Running
 
