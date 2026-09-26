@@ -5,7 +5,7 @@
 *.ckpt
 *.engine
 models/.onnx-cache/
-models/.part
+models/*.part
 models/.hashes.json
 
 # Video output
