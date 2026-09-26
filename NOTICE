@@ -1,0 +1,30 @@
+# Third-party notices
+
+This project is MIT licensed (see `LICENSE`). It links against, or ships
+alongside, the following third-party components, each under its own licence.
+
+## PySide6 — LGPL-3.0-only
+
+Qt for Python. **LGPL-3.0-only**, which is why it was chosen over the
+source-only PyGObject/GTK4 stack: an LGPL dependency is safe to redistribute in
+a public repository, and PySide6 ships manylinux/win/macOS wheels while
+PyGObject is source-distribution only on PyPI.
+
+- Upstream: <https://www.qt.io/licensing/open-source-lgpl-obligations>
+- Wheels are unmodified upstream binaries. Dynamically linking the LGPL
+  libraries is the supported distribution mode; no LGPL source is bundled here.
+
+## Toga — BSD-3-Clause
+
+BeeWare Toga plus its `toga-gtk` backend. BSD-3-Clause, a permissive licence
+compatible with MIT redistribution.
+
+- Upstream: <https://github.com/beeware/toga>
+
+## The rest
+
+Everything else pulled in at install time keeps its own licence, including
+ONNX Runtime (MIT), PyTorch (BSD-3-Clause), OpenCV (Apache-2.0), numpy
+(BSD-3-Clause), spandrel (MIT), selectolax (MIT), requests (Apache-2.0) and
+the model weights themselves, which keep the licences listed per entry in
+`models/catalogue.json`.
