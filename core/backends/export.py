@@ -69,6 +69,11 @@ EMITTED_OPS_ALLOWLIST: frozenset[str] = frozenset(
         "LeakyRelu",
         "Mul",
         "Pad",
+        # The CoreML EP lists `PRelu` with one constraint: "Input slope should be
+        # constant. Input slope should either have shape [C, 1, 1] or have 1
+        # element." The compact Real-ESRGAN models use exactly that form, and
+        # `assert_ops_supported` checks the constraint rather than trusting it.
+        "PRelu",
         "Resize",
         "Reshape",
         "Squeeze",
@@ -350,12 +355,39 @@ def assert_ops_supported(model_path: Path) -> None:
     The message names the offending ops, because "the CoreML provider silently
     fell back to CPU" is the failure this check exists to prevent.
     """
-    unknown = sorted(_op_types(model_path) - EMITTED_OPS_ALLOWLIST)
+    import onnx
+
+    model = onnx.load(str(model_path), load_external_data=False)
+    used = {node.op_type for node in model.graph.node}
+    unknown = sorted(used - EMITTED_OPS_ALLOWLIST)
     if unknown:
         raise BackendUnavailableError(
             f"{model_path.name} uses ops no supported execution provider accepts: "
             f"{', '.join(unknown)}"
         )
+    _assert_constant_prelu_slopes(model, model_path)
+
+
+def _assert_constant_prelu_slopes(model: object, model_path: Path) -> None:
+    """Every `PRelu` slope must be a constant, or CoreML cannot run the graph.
+
+    The CoreML EP's table carries the condition inline, and an op being in the
+    table is not the same as a graph being runnable: a `PRelu` whose slope comes
+    from a computed tensor is rejected at session creation, with a message about
+    CoreML rather than about the model.
+    """
+    graph = model.graph  # type: ignore[attr-defined]
+    constants = {initializer.name for initializer in graph.initializer}
+    constants.update(value.name for value in graph.input)
+    for node in graph.node:
+        if node.op_type != "PRelu" or len(node.input) < 2:
+            continue
+        if node.input[1] not in constants:
+            raise BackendUnavailableError(
+                f"{model_path.name} has a PRelu whose slope is computed rather than "
+                "constant; the CoreML execution provider only accepts a constant "
+                "slope of shape [C, 1, 1] or one element"
+            )
 
 
 def graph_spatial_shape(model_path: Path) -> tuple[int, int] | None:
