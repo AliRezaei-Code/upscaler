@@ -1,0 +1,113 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "upscaler"
+version = "0.1.0"
+description = "Cross-platform GUI video upscaler with a browsable model catalogue and multi-GPU execution"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "AliRezaei-Code" }]
+keywords = ["upscaling", "super-resolution", "realesrgan", "video", "onnxruntime"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: GPU",
+  "Environment :: X11 Applications :: Qt",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Video",
+]
+
+dependencies = [
+  "PySide6==6.8.3",
+  "toga==0.5.6",
+  "toga-dummy==0.5.6",
+  "numpy",
+  "opencv-python-headless",
+  "requests",
+  "selectolax",
+  "spandrel",
+]
+
+[project.optional-dependencies]
+# CPU inference: ONNX Runtime plus the PyTorch fallback for .pth checkpoints
+# that cannot be exported (and for export itself).
+cpu = [
+  "onnxruntime==1.22.0",
+  "torch==2.7.1",
+]
+# NVIDIA on Linux/Windows. onnxruntime-gpu 1.26.x is the CUDA 12.8 line; there is
+# no 1.26.3 release, so the pin is 1.26.0. Pair it with torch 2.7.1+cu126.
+cuda = [
+  "onnxruntime-gpu[cuda,cudnn]==1.26.0",
+  "torch==2.7.1",
+]
+# Windows GPU for NVIDIA/AMD/Intel alike, over DirectX 12.
+dml = ["onnxruntime-directml==1.24.4"]
+# AMD on Linux. The MIGraphX EP is not on PyPI: ROCmExecutionProvider was
+# removed in ONNX Runtime 1.23+, so MIGraphX is the only AMD path left. Both
+# wheels below are x86_64 manylinux + CPython 3.12 only, which is a documented
+# requirement of this backend rather than an accident.
+migraphx = [
+  "onnxruntime_migraphx @ https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2/onnxruntime_migraphx-1.23.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+  "torch @ https://download.pytorch.org/whl/rocm7.2/torch-2.12.1%2Brocm7.2-cp312-cp312-manylinux_2_28_x86_64.whl",
+]
+dev = [
+  "pytest",
+  "pytest-cov",
+  "pytest-timeout",
+  "ruff",
+  "mypy",
+  "types-requests",
+]
+
+[project.urls]
+Homepage = "https://github.com/AliRezaei-Code/upscaler"
+Repository = "https://github.com/AliRezaei-Code/upscaler"
+Issues = "https://github.com/AliRezaei-Code/upscaler/issues"
+
+[project.scripts]
+upscaler = "ui_pyside.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "ui_pyside", "ui_toga"]
+
+[tool.hatch.metadata]
+# The MIGraphX and ROCm PyTorch wheels are not on PyPI; they can only be named by
+# URL, and hatchling rejects such references unless explicitly allowed.
+allow-direct-references = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+# E402 is the deliberate deferred-import pattern in core/app.py and
+# ui_pyside/runtimes_tab.py, which must import torch/onnxruntime only
+# after the Runtimes tab has extended the search path.
+per-file-ignores = { "core/app.py" = ["E402"], "ui_pyside/runtimes_tab.py" = ["E402"] }
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# onnxruntime*, spandrel, selectolax and opencv ship no py.typed marker
+ignore_missing_imports = true
+warn_unused_ignores = false
+exclude = ["^ui_pyside/worker_bridge\\.py$"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+markers = [
+  "gpu: requires a real accelerator; deselected in CI",
+  "network: requires internet access; deselected in pull requests",
+]
+timeout = 120
+testpaths = ["tests"]
