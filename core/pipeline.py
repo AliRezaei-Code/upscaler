@@ -153,6 +153,18 @@ def _emit(emit: Callable[[PipelineEvent], None], event: PipelineEvent) -> None:
     emit(event)
 
 
+def _gib(value: float) -> str:
+    """A byte count as GB or GiB, whichever is not a joke at this size.
+
+    `Need ~0 GB, 42 GB free` is what a 60-frame test clip prints with one
+    decimal place, and a preflight that says "0 GB" reads as though it did
+    nothing.
+    """
+    if value < 1000**3:
+        return f"{value / 1000**2:.0f} MB"
+    return f"{value / 1000**3:.1f} GB"
+
+
 def _stage(emit: Callable[[PipelineEvent], None], stage: str, message: str) -> None:
     """Announce a pipeline step, with the detail the log line should carry."""
     _emit(
@@ -201,21 +213,28 @@ def _teardown(pool: ProcessPoolExecutor) -> None:
 def _drain_progress(
     progress_q: Any, emit: Callable[[PipelineEvent], None]
 ) -> dict[int, int]:
-    """Move whatever progress has arrived into events. Returns counts by device."""
+    """Move whatever progress has arrived into events. Returns counts by ordinal.
+
+    The queue carries the *ordinal* of the selected device, not its
+    `Device.index`, because the two are different numbers: `index` is unique
+    only within a vendor's device space, so GPU 0 and CPU 0 are both 0, and a
+    front-end keying its rows on the index draws the CPU's progress on the first
+    GPU's row.
+    """
     processed: dict[int, int] = {}
     while True:
         try:
-            device_index, done, total, fps = progress_q.get_nowait()
+            ordinal, done, total, fps = progress_q.get_nowait()
         except Exception:
             # `queue.Empty` and a closed queue both mean the same thing here.
             break
-        processed[device_index] = done
+        processed[ordinal] = done
         _emit(
             emit,
             PipelineEvent(
                 kind="device_progress",
                 task_id="job",
-                device_index=device_index,
+                device_ordinal=ordinal,
                 processed=done,
                 total=total,
                 fps=fps,
@@ -274,13 +293,13 @@ def run_job(
     free = shutil.disk_usage(cfg.work_dir).free
     if free < estimate * DISK_HEADROOM:
         raise UpscalerError(
-            f"Need ~{estimate / 1e9:.0f} GB for frames, {free / 1e9:.0f} GB free at "
+            f"Need ~{_gib(estimate)} for frames, {_gib(free)} free at "
             f"{cfg.work_dir}. Choose another work directory."
         )
     _stage(
         emit,
         "preflight",
-        f"Need ~{estimate / 1e9:.0f} GB, {free / 1e9:.0f} GB free at {cfg.work_dir}",
+        f"Need ~{_gib(estimate)}, {_gib(free)} free at {cfg.work_dir}",
     )
 
     if count_frames(frames_in) == info.frame_count and info.frame_count > 0:
@@ -399,8 +418,9 @@ def _run_devices(
             precision=cfg.precision,
             tile_size=cfg.tile_size,
             export_size=frame_size,
+            ordinal=ordinal,
         )
-        for device, chunk in zip(devices, chunks, strict=True)
+        for ordinal, (device, chunk) in enumerate(zip(devices, chunks, strict=True))
     ]
     # A stop requested before the pool started still has to stop this one.
     if cancel.is_set():

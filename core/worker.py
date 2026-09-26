@@ -89,6 +89,11 @@ class ChunkArgs:
         tile_size: `0` lets the backend decide from the frame size.
         export_size: `(height, width)` of the frames, needed to export a `.pth`
             into an ONNX graph with concrete spatial dims.
+        ordinal: This device's position in the selection, 0-based. It is what a
+            progress row is keyed on, because `Device.index` is only unique
+            within a vendor's device space: GPU 0 and CPU 0 are both 0, and
+            reporting the index alone would draw the CPU's progress on the
+            first GPU's row.
     """
 
     backend_cls: type[Backend]
@@ -100,6 +105,7 @@ class ChunkArgs:
     precision: str = "auto"
     tile_size: int = 0
     export_size: tuple[int, int] | None = None
+    ordinal: int = -1
 
 
 def _worker_init(cancel: CancelEvent, progress_q: ProgressQueue) -> None:
@@ -121,14 +127,14 @@ def _cancelled() -> bool:
     return _CANCEL is not None and _CANCEL.is_set()
 
 
-def _report(device_index: int, processed: int, total: int, fps: float) -> None:
+def _report(ordinal: int, processed: int, total: int, fps: float) -> None:
     """Publish one progress update, if anyone is listening."""
     if _PROGRESS_QUEUE is None:
         return
     # Progress is the one thing that may be lost: a full queue means the parent
     # is behind, and the next report carries the count anyway.
     with contextlib.suppress(queue.Full):
-        _PROGRESS_QUEUE.put_nowait((device_index, processed, total, fps))
+        _PROGRESS_QUEUE.put_nowait((ordinal, processed, total, fps))
 
 
 def _synchronise_device(device: Device) -> None:
@@ -244,7 +250,6 @@ def upscale_chunk(args: ChunkArgs) -> int:
     started = time.monotonic()
     try:
         backend = _build_backend(args)
-        device_index = to_do[0][0]
         while True:
             if _cancelled():
                 break
@@ -263,14 +268,14 @@ def upscale_chunk(args: ChunkArgs) -> int:
             if written % REPORT_EVERY == 0:
                 _synchronise_device(args.device)
                 elapsed = max(1e-6, time.monotonic() - started)
-                _report(device_index, written, len(to_do), written / elapsed)
+                _report(args.ordinal, written, len(to_do), written / elapsed)
     finally:
         if written and written % REPORT_EVERY:
             # Without this the last report is `written - remainder`, so a
             # 250-frame chunk's progress bar stops at 200 and stays there while
             # the job finishes. The count is exact, so publish it.
             elapsed = max(1e-6, time.monotonic() - started)
-            _report(to_do[0][0], written, len(to_do), written / elapsed)
+            _report(args.ordinal, written, len(to_do), written / elapsed)
         write_q.put(None)
         writer.join(timeout=30)
         reader.join(timeout=30)

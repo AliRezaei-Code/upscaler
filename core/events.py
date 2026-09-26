@@ -25,8 +25,12 @@ class PipelineEvent:
             `"community"`, `"runtime:<name>"`. Front-ends dispatch on this, so
             a model download's progress can never land in the job's widgets.
         stage: Pipeline step name for `kind="stage"`.
-        device_index: Which device the update came from; `-1` when not
+        device_index: The device's own index, which is unique only within its
+            vendor's device space — GPU 0 and CPU 0 are both 0. `-1` when not
             device-specific.
+        device_ordinal: Which *selected* device the update came from, 0-based,
+            unique across the whole selection. This is what a front-end keys a
+            row on; `device_index` is for the log.
         processed: Frames finished so far by the emitting device.
         total: Frames the emitting device was given.
         fps: Measured throughput of the emitting device, frames per second.
@@ -38,6 +42,7 @@ class PipelineEvent:
     task_id: str = ""
     stage: str = ""
     device_index: int = -1
+    device_ordinal: int = -1
     processed: int = 0
     total: int = 0
     fps: float = 0.0

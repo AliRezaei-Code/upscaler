@@ -44,7 +44,11 @@ def make_device(index: int = 0) -> Device:
 
 
 def make_args(
-    tmp_path: Path, *, frames: int = 4, device: Device | None = None
+    tmp_path: Path,
+    *,
+    frames: int = 4,
+    device: Device | None = None,
+    ordinal: int = 0,
 ) -> ChunkArgs:
     frames_in = tmp_path / "frames_in"
     for index in range(frames):
@@ -57,6 +61,7 @@ def make_args(
         items=tuple((0, f"frame_{index:08d}.png") for index in range(frames)),
         device=device or make_device(),
         export_size=(32, 48),
+        ordinal=ordinal,
     )
 
 

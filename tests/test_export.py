@@ -418,3 +418,74 @@ def test_the_real_exported_model_runs_and_quadruples_the_frame(real_onnx: Path) 
     result = session.run(None, {session.get_inputs()[0].name: frame})[0]
     assert result.shape == (1, 3, HEIGHT * 4, WIDTH * 4)
     assert np.isfinite(result).all()
+
+
+def test_prelu_is_allowed_because_the_coreml_table_allows_it(
+    synthetic_onnx: Path,
+) -> None:
+    """The compact Real-ESRGAN models export `PRelu`, and the table lists it.
+
+    Found by running the catalogue's own recommended model for a wedged P40:
+    `realesr-general-x4v3` refused to export with "ops no supported execution
+    provider accepts: PRelu", because PRelu was missing from the allow-list. The
+    CoreML EP's table carries it with one condition — "Input slope should be
+    constant. Input slope should either have shape [C, 1, 1] or have 1 element"
+    — which is exactly the form the compact models use.
+    """
+    assert "PRelu" in EMITTED_OPS_ALLOWLIST
+
+
+def test_a_computed_prelu_slope_is_refused(tmp_path: Path) -> None:
+    """Being in the table is not the same as being runnable: the slope does."""
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    data = numpy_helper.from_array(np.zeros((1, 3, 4, 4), dtype=np.float32), name="x")
+    ones = numpy_helper.from_array(np.ones((3, 1, 1), dtype=np.float32), name="ones")
+    twos = numpy_helper.from_array(
+        np.full((3, 1, 1), 2.0, dtype=np.float32), name="twos"
+    )
+    graph = helper.make_graph(
+        [
+            # Every op here is in the allow-list, so the refusal can only be
+            # about the slope being computed rather than constant.
+            helper.make_node("Mul", ["ones", "twos"], ["slope"], name="mul"),
+            helper.make_node("PRelu", ["x", "slope"], ["y"], name="pr"),
+        ],
+        "g",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, 4, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 3, 4, 4])],
+        [data, ones, twos],
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", ONNX_OPSET)]
+    )
+    model.ir_version = ORT_MAX_IR_VERSION
+    onnx.checker.check_model(model)
+    path = tmp_path / "computed_prelu.onnx"
+    onnx.save(model, str(path))
+    with pytest.raises(BackendUnavailableError, match="PRelu whose slope is computed"):
+        assert_ops_supported(path)
+
+
+def test_a_constant_prelu_slope_is_accepted(tmp_path: Path) -> None:
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    data = numpy_helper.from_array(np.zeros((1, 3, 4, 4), dtype=np.float32), name="x")
+    slope = numpy_helper.from_array(np.ones((3, 1, 1), dtype=np.float32), name="slope")
+    graph = helper.make_graph(
+        [helper.make_node("PRelu", ["x", "slope"], ["y"], name="pr")],
+        "g",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, 4, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 3, 4, 4])],
+        [data, slope],
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", ONNX_OPSET)]
+    )
+    model.ir_version = ORT_MAX_IR_VERSION
+    onnx.checker.check_model(model)
+    path = tmp_path / "constant_prelu.onnx"
+    onnx.save(model, str(path))
+    assert_ops_supported(path)

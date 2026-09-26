@@ -113,7 +113,9 @@ def test_a_second_device_gets_its_own_share(tmp_path: Path) -> None:
     assert written == [f"frame_{index:08d}.png" for index in range(5)]
     assert cfg.output_path.is_file()
     device_events = [event for event in events if event.kind == "device_progress"]
-    assert {event.device_index for event in device_events} <= {0, 1}
+    # Keyed on the ordinal of the *selection*, not on the device's own index:
+    # both Tesla P40s are 0 and 1, and the CPU would be a third 0.
+    assert {event.device_ordinal for event in device_events} <= {0, 1}
 
 
 def test_each_device_really_ran_in_its_own_process(
