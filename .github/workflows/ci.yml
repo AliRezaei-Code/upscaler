@@ -153,25 +153,34 @@ jobs:
               return f"{prefix}-core=={version}" if version else f"{prefix}-core"
 
 
-          linux = sys.platform.startswith("linux")
-          deferred = {"toga"} if linux else set()
+          # `toga` is deferred on every platform, not just Linux. Its own
+          # import resolves to `toga-core`, and the suite drives the
+          # `toga-dummy` backend, so the platform backend is a dependency the
+          # tests never use: on Linux it is `toga-gtk`, which needs PyGObject
+          # (a source distribution whose build needs the GObject-introspection
+          # headers, and a job that cannot install at all), and on Windows it
+          # is `toga-winforms`, which pulls a second PySide6.
+          deferred = {"toga"}
           plain = [r for r in wanted if name(r) not in deferred]
           held = [r for r in wanted if name(r) in deferred]
           command = [sys.executable, "-m", "pip", "install"]
           if linux:
               command += ["--extra-index-url", "https://download.pytorch.org/whl/cpu"]
           subprocess.check_call([*command, *plain])
-          subprocess.check_call(
-              [
-                  sys.executable,
-                  "-m",
-                  "pip",
-                  "install",
-                  "--no-deps",
-                  *held,
-                  *(core_of(r) for r in held),
-              ]
-          )
+          # `pip install` with no requirement is an error, so this is guarded
+          # rather than run with an empty list.
+          if held:
+              subprocess.check_call(
+                  [
+                      sys.executable,
+                      "-m",
+                      "pip",
+                      "install",
+                      "--no-deps",
+                      *held,
+                      *(core_of(r) for r in held),
+                  ]
+              )
           # The project last, and with `--no-deps`: everything it asks for is
           # already above, and letting pip resolve the tree again would walk
           # straight back into the `toga` backend chain this avoids.
@@ -237,6 +246,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes \
             libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3 libfontconfig1
+      - name: Install ffmpeg
+        # The GitHub images do not all carry ffmpeg, and the suite needs a real
+        # one: `core.ffmpeg` prefers the system binary, and the tests that build
+        # a clip, extract frames and encode a video cannot use the bundled
+        # fallback for `ffprobe`, which imageio-ffmpeg does not ship. Windows
+        # has no package manager here, so it relies on the bundled binary and
+        # takes the ffmpeg-only `probe()` path - which is a path worth
+        # exercising anyway.
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends --yes ffmpeg
+          else
+            brew install ffmpeg || brew upgrade ffmpeg
+          fi
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
       - name: Create the virtual environment
         id: venv
         shell: bash

@@ -68,6 +68,12 @@ dev = [
   "ruff",
   "mypy",
   "types-requests",
+  # A bundled ffmpeg, for every machine that has no system one: a CI runner,
+  # a contributor's laptop, and `scripts/verify_install.py`. `core.ffmpeg`
+  # prefers the system binary and falls back to this, so nothing else changes.
+  # It ships ffmpeg only, not ffprobe, which is why the CI jobs install a real
+  # ffmpeg too and get the ffprobe path as well.
+  "imageio-ffmpeg",
 ]
 
 [project.urls]
