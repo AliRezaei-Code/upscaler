@@ -190,7 +190,9 @@ jobs:
           - { target: deb-cpu, os: ubuntu-latest, artifact: deb-cpu }
           - { target: deb-cuda, os: ubuntu-latest, artifact: deb-cuda }
           - { target: windows, os: windows-latest, artifact: win }
-          - { target: macos, os: macos-13, artifact: mac }
+          # arm64, like the CI leg: macos-13 queued indefinitely on this
+          # repository, and an .app for Apple silicon is the one worth signing.
+          - { target: macos, os: macos-14, artifact: mac }
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

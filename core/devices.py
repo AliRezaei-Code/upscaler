@@ -609,7 +609,10 @@ def probe_intel(emit: Callable[[str], None] | None = None) -> list[Device]:
         text = texts.get(path)
         if text is None or text.strip().lower() != INTEL_PCI_VENDOR:
             continue
-        card = path.split("/")[-3]
+        # `Path.parts`, not `path.split("/")`: sysfs is a POSIX path on
+        # Linux and a backslash-separated one on Windows, and the literal
+        # split raised IndexError there rather than returning a card name.
+        card = Path(path).parts[-3]
         devices.append(
             Device(
                 index=len(devices),

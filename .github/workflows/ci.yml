@@ -206,10 +206,13 @@ jobs:
       # One red platform must not hide the state of the other five.
       fail-fast: false
       matrix:
-        # macos-13 is x86_64, which is the point: it is the runner where a wheel
-        # that only ever shipped arm64 fails, and where the CoreML path is not
-        # even available so a macOS-specific import bug surfaces.
-        os: [ubuntu-latest, windows-latest, macos-13]
+        # macos-14 is Apple Silicon, which is where the macOS story of this
+        # project actually lives: CoreML and MPS are both arm64 questions. The
+        # x86_64 leg (macos-13) was the original choice for catching a wheel
+        # that only shipped arm64, but GitHub queued macos-13 jobs for the
+        # better part of an hour without a runner, which is a worse failure
+        # than losing that leg: a macOS job that never runs checks nothing.
+        os: [ubuntu-latest, windows-latest, macos-14]
         python: ["3.11", "3.12"]
     steps:
       - name: Check out
