@@ -64,9 +64,10 @@ class Device:
         Lives here rather than in either UI so the PySide6 and Toga device
         lists cannot drift apart.
         """
-        kind = "CPU" if self.vendor == "cpu" else f"GPU {self.index}"
+        if self.vendor == "cpu":
+            return f"CPU — {self.name}"
         memory = format_memory(self.total_memory_bytes)
-        return f"{kind} — {self.name} — {memory} — {self.backend}"
+        return f"GPU {self.index} — {self.name} — {memory} — {self.backend}"
 
 
 @dataclass(frozen=True)

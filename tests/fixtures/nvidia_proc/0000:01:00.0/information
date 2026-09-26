@@ -1,0 +1,10 @@
+Model: 		 Tesla P40
+IRQ:   		 155
+GPU UUID: 	 GPU-6ad3a6cc-2dac-e92c-42d4-b4aae11b6fe3
+Video BIOS: 	 ??.??.??.??.??
+Bus Type: 	 PCI
+DMA Size: 	 47 bits
+DMA Mask: 	 0x7fffffffffff
+Bus Location: 	 0000:01:00.0
+Device Minor: 	 0
+GPU Excluded:	 No

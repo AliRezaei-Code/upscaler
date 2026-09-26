@@ -1,0 +1,7 @@
+cpu_cores_count 32
+gfx_arch gfx90a
+location_id 0x0
+location_domain 0
+location_simd_count 512
+location_id 0x100
+location_simd_count 512
