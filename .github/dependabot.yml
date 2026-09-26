@@ -1,0 +1,72 @@
+# Dependency updates.
+#
+# Weekly, deliberately, not daily. Every pinned runtime here is a *pairing*
+# decision rather than a preference: `onnxruntime-gpu` and `torch` are chosen
+# together (the 1.26.x line is CUDA 12.8 and goes with torch 2.7.1+cu126), and a
+# bot that bumps one of them on Monday and the other on Tuesday produces two
+# broken intermediate states a week. `groups` below keeps the GPU stack in one
+# pull request for the same reason.
+version: 2
+
+updates:
+  # Python dependencies. `pyproject.toml` is the only dependency manifest in
+  # the tree, and it lives at the root; a requirements file, when one is added,
+  # has to be listed in the `directories` key below, because a Dependabot entry
+  # that names a directory which does not exist fails the whole run rather than
+  # skipping it.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - pip
+    pull-request-branch-name:
+      prefix: dependabot/weekly
+    groups:
+      # The inference stack moves as one unit. `onnxruntime-gpu` 1.26.x is the
+      # CUDA 12.8 build and pairs with torch 2.7.1; 1.27+ is CUDA 13.0 and
+      # pairs with a different torch line. Split across two pull requests, the
+      # intermediate state is a CUDA EP that fails to load and silently falls
+      # back to the CPU — the exact failure this project has to avoid.
+      inference-runtime:
+        patterns:
+          - "onnxruntime*"
+          - "torch*"
+          - "numpy"
+          - "opencv-python-headless"
+      # `onnx` sits here rather than with the runtime: it is the graph format
+      # the exporter writes and both engines read, and the opset the exporter
+      # uses has to stay under the DirectML ceiling of 20 that
+      # `core/backends/export.py` documents. A pull request that moved it on
+      # its own is the one most likely to miss that.
+      frontends:
+        patterns:
+          - "PySide6"
+          - "toga*"
+          - "onnx"
+
+  # GitHub Actions. A pinned SHA with a Dependabot PR against it is the only
+  # way to keep the pin and still get the security update; the workflow files
+  # carry the version in a trailing comment so the bump is reviewable.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    pull-request-branch-name:
+      prefix: dependabot/weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

@@ -79,12 +79,65 @@ Issues = "https://github.com/AliRezaei-Code/upscaler/issues"
 upscaler = "ui_pyside.main:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "ui_pyside", "ui_toga"]
+packages = ["core", "ui_pyside", "ui_toga", "upscaler"]
 
 [tool.hatch.metadata]
 # The MIGraphX and ROCm PyTorch wheels are not on PyPI; they can only be named by
 # URL, and hatchling rejects such references unless explicitly allowed.
 allow-direct-references = true
+
+[tool.briefcase]
+project_name = "Upscaler"
+bundle = "org.alirezaei.upscaler"
+version = "0.1.0"
+description = "Cross-platform GUI video upscaler"
+long_description = """
+Upscale a video with an open-source super-resolution model, on every GPU in the
+machine, resumably.
+"""
+authors = ["AliRezaei-Code"]
+license = "MIT"
+requires_python = ">=3.11"
+icon = "packaging/icon.png"
+
+[tool.briefcase.app.upscaler]
+formal_name = "Upscaler"
+description = "Cross-platform GUI video upscaler"
+long_description = """
+Upscale a video with an open-source super-resolution model, on every GPU in the
+machine, resumably.
+"""
+# Briefcase requires a package named after the app, so `upscaler` is a
+# three-line re-export of `ui_toga.app` — the front-end is still `ui_toga` and
+# the logic is still `core`, both listed because the app imports them as
+# top-level packages and a bundle without them fails at import.
+sources = ["upscaler", "ui_toga", "core", "models", "packaging/icon.png"]
+entry_point = "upscaler:main"
+icon = "packaging/toga/icon.png"
+
+# Toga is packaged with Briefcase and not with PyInstaller: Toga's widget
+# backends cannot be frozen. Two Linux facts, both measured here rather than
+# assumed:
+#   * `toga` pulls `toga-gtk`, which imports `gi.events` and therefore needs
+#     PyGObject >= 3.50 — newer than the 3.42 on Ubuntu 22.04 and the 3.48 on
+#     24.04 — so the Linux build carries a PyGObject built from source.
+#   * Briefcase's Linux builder uses the *system* python3, and this project
+#     requires >= 3.11, so it refuses to build against Ubuntu 22.04's 3.10.
+#     `briefcase create` on that release fails with "The version of Python being
+#     used to run Briefcase is not the system python3".
+# See packaging/README.md for what that means per distribution.
+
+[tool.briefcase.build]
+builder = "briefcase.builders.linux.system"
+
+[tool.briefcase.build.linux.appimage]
+system_packages = [
+  "gir1.2-gtk-3.0",
+  "libgl1",
+  "libgtk-3-0",
+  "libxkbcommon-x11-0",
+]
+
 
 [tool.ruff]
 target-version = "py311"
