@@ -1,0 +1,14 @@
+cpu_cores_count 16
+simd_count 512
+simd_width 256
+wavefront_size 64
+gfx_target gfx1030
+gfx_arch gfx1030
+location_id 0x400
+location_domain 0
+location_mem_banks 0
+location_cache_sizes 0
+location_simd_count 512
+location_max_waves_per_simd 64
+location_max_workgroup_size 256
+location_grid_max_size 2147483647
