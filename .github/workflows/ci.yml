@@ -358,24 +358,27 @@ jobs:
 
 
           linux = sys.platform.startswith("linux")
-          deferred = {"toga"} if linux else set()
+          deferred = {"toga"}
           plain = [r for r in wanted if name(r) not in deferred]
           held = [r for r in wanted if name(r) in deferred]
           command = [sys.executable, "-m", "pip", "install"]
           if linux:
               command += ["--extra-index-url", "https://download.pytorch.org/whl/cpu"]
           subprocess.check_call([*command, *plain])
-          subprocess.check_call(
-              [
-                  sys.executable,
-                  "-m",
-                  "pip",
-                  "install",
-                  "--no-deps",
-                  *held,
-                  *(core_of(r) for r in held),
-              ]
-          )
+          # `pip install` with no requirement is an error, so this is guarded
+          # rather than run with an empty list.
+          if held:
+              subprocess.check_call(
+                  [
+                      sys.executable,
+                      "-m",
+                      "pip",
+                      "install",
+                      "--no-deps",
+                      *held,
+                      *(core_of(r) for r in held),
+                  ]
+              )
           # The project last, and with `--no-deps`: everything it asks for is
           # already above, and letting pip resolve the tree again would walk
           # straight back into the `toga` backend chain this avoids. This
