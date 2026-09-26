@@ -160,6 +160,7 @@ jobs:
           # (a source distribution whose build needs the GObject-introspection
           # headers, and a job that cannot install at all), and on Windows it
           # is `toga-winforms`, which pulls a second PySide6.
+          linux = sys.platform.startswith("linux")
           deferred = {"toga"}
           plain = [r for r in wanted if name(r) not in deferred]
           held = [r for r in wanted if name(r) in deferred]
