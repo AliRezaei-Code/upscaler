@@ -65,6 +65,21 @@ def _install_recording(cancel: threading.Event) -> list[list[int]]:
 # --- install / uninstall ------------------------------------------------------
 
 
+def _raise_signal(signum: signal.Signals = signal.SIGINT) -> None:
+    """Run the installed handler the way the platform would.
+
+    Not `os.kill(os.getpid(), signum)`: on Windows every signal except
+    `CTRL_C_EVENT` and `CTRL_BREAK_EVENT` is a `TerminateProcess`, so raising
+    SIGINT that way kills the pytest process itself — the suite died mid-run on
+    windows-latest with exit code 2 and no output. The handler is the unit under
+    test, so it is called directly, which is also what a Ctrl-C reaches on every
+    platform.
+    """
+    handler = signal.getsignal(signum)
+    assert callable(handler), "no handler installed"
+    handler(signum, None)
+
+
 def test_uninstall_puts_back_the_handler_that_was_there_before() -> None:
     before_int = signal.getsignal(signal.SIGINT)
     before_term = signal.getsignal(signal.SIGTERM)
@@ -110,10 +125,7 @@ def test_the_handler_sets_the_cancel_event_and_returns(
 ) -> None:
     cancel = _cancel_event()
     _install_recording(cancel)
-    handler = signal.getsignal(signum)
-    assert callable(handler)
-
-    handler(signum, None)  # must return, not raise and not sys.exit
+    _raise_signal(signum)  # must return, not raise and not sys.exit
 
     assert cancel.is_set()
 
@@ -137,7 +149,7 @@ def test_a_process_group_pid_does_not_take_the_app_down_with_the_workers() -> No
     cancel = _cancel_event()
     install(lambda: [0, -1, 0], cancel)
 
-    os.kill(os.getpid(), signal.SIGINT)
+    _raise_signal(signal.SIGINT)
 
     assert cancel.is_set()
 
@@ -152,7 +164,7 @@ def test_the_pids_the_handler_is_given_are_killed() -> None:
             return [child.pid]
 
         install(get_pids, cancel)
-        os.kill(os.getpid(), signal.SIGINT)
+        _raise_signal(signal.SIGINT)
 
         assert cancel.is_set()
         # A killed child is reaped here; if the handler had left it running,
@@ -178,7 +190,7 @@ def test_a_pid_that_is_already_gone_does_not_stop_the_handler() -> None:
             return [finished.pid, still_running.pid]
 
         install(get_pids, cancel)
-        os.kill(os.getpid(), signal.SIGTERM)
+        _raise_signal(signal.SIGTERM)
 
         assert cancel.is_set()
         assert still_running.wait(timeout=10) != 0
@@ -192,7 +204,7 @@ def test_a_signal_with_no_worker_pids_still_cancels() -> None:
     cancel = _cancel_event()
     install(lambda: [], cancel)
 
-    os.kill(os.getpid(), signal.SIGINT)
+    _raise_signal(signal.SIGINT)
 
     assert cancel.is_set()
 
@@ -202,7 +214,7 @@ def test_a_new_cancel_event_is_the_one_the_second_install_wired_up() -> None:
     install(lambda: [], first)
     install(lambda: [], second)
 
-    os.kill(os.getpid(), signal.SIGINT)
+    _raise_signal(signal.SIGINT)
 
     assert second.is_set()
     assert not first.is_set()
@@ -270,8 +282,6 @@ def test_the_handler_never_signals_its_own_process_or_a_group() -> None:
     because `get_pids` is supplied by the caller and the handler is the only
     place that knows who "we" are.
     """
-    import os
-
     signals_module.uninstall()
     cancel = threading.Event()
     killed: list[int] = []
@@ -279,9 +289,7 @@ def test_the_handler_never_signals_its_own_process_or_a_group() -> None:
     os.kill = lambda pid, sig: killed.append(pid)  # type: ignore[assignment]
     try:
         install(lambda: [os.getpid(), 0, -1, 4242], cancel)
-        handler = signal.getsignal(signal.SIGINT)
-        assert callable(handler)
-        handler(signal.SIGINT, None)
+        _raise_signal(signal.SIGINT)
     finally:
         os.kill = real_kill  # type: ignore[assignment]
         uninstall()
