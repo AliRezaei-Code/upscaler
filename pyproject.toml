@@ -109,10 +109,28 @@ warn_unused_ignores = false
 exclude = ["^ui_pyside/worker_bridge\\.py$"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-markers"
+# The coverage floor arrives with the pipeline tests (Phase 4). It is a floor
+# on `core/`, which is where every behaviour worth asserting lives; the two
+# front-ends are thin by design and are covered by their own smoke runs.
+addopts = "-ra --strict-markers --cov=core --cov-fail-under=80"
 markers = [
   "gpu: requires a real accelerator; deselected in CI",
   "network: requires internet access; deselected in pull requests",
 ]
 timeout = 120
 testpaths = ["tests"]
+
+[tool.coverage.run]
+# The workers run in spawned children, so their coverage is only recorded if
+# the child processes are told to write it.
+concurrency = ["multiprocessing", "thread"]
+parallel = true
+source = ["core"]
+
+[tool.coverage.report]
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+]
