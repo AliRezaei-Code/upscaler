@@ -259,3 +259,33 @@ def test_the_module_never_imports_a_heavy_runtime() -> None:
     source = Path(signals_module.__file__).read_text(encoding="utf-8")
     for heavy in ("import torch", "import cv2", "import onnxruntime"):
         assert heavy not in source
+
+
+def test_the_handler_never_signals_its_own_process_or_a_group() -> None:
+    """A pid list containing this process must not take this process down.
+
+    Measured on windows-latest: the handler killed the pytest process itself,
+    so the suite died mid-run with exit code 2 and no traceback. On POSIX a
+    SIGKILL to the parent is equally untrappable; the guard is in the handler
+    because `get_pids` is supplied by the caller and the handler is the only
+    place that knows who "we" are.
+    """
+    import os
+
+    signals_module.uninstall()
+    cancel = threading.Event()
+    killed: list[int] = []
+    real_kill = os.kill
+    os.kill = lambda pid, sig: killed.append(pid)  # type: ignore[assignment]
+    try:
+        install(lambda: [os.getpid(), 0, -1, 4242], cancel)
+        handler = signal.getsignal(signal.SIGINT)
+        assert callable(handler)
+        handler(signal.SIGINT, None)
+    finally:
+        os.kill = real_kill  # type: ignore[assignment]
+        uninstall()
+    assert cancel.is_set(), "the cancel event must still be set"
+    assert os.getpid() not in killed, "the handler signalled its own process"
+    assert 0 not in killed and -1 not in killed, "a process group was signalled"
+    assert 4242 in killed, "the real worker pid was not signalled"
