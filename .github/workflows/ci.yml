@@ -238,6 +238,7 @@ jobs:
           sudo apt-get install --no-install-recommends --yes \
             libegl1 libgl1 libxkbcommon-x11-0 libdbus-1-3 libfontconfig1
       - name: Create the virtual environment
+        id: venv
         shell: bash
         run: |
           set -euo pipefail
@@ -245,8 +246,23 @@ jobs:
           # trusted: `python -m venv` rewrites pyvenv.cfg and the bin/python
           # symlink to the interpreter this job actually got.
           python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -V
+          # Windows puts the interpreter in Scripts/ and calls it python.exe.
+          # Hard-coding bin/ here fails with "command not found" and exit 127
+          # on windows-latest, which is the second platform-only defect the
+          # matrix exists to surface.
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            echo "python=.venv/Scripts/python.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "python=.venv/bin/python" >> "$GITHUB_OUTPUT"
+          fi
+        # `python -m venv` is enough: a restored environment is repaired, not
+        # trusted, and the interpreter path is derived below.
+      - name: Check the environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ steps.venv.outputs.python }}" -m pip install --upgrade pip
+          "${{ steps.venv.outputs.python }}" -V
       - name: Install
         shell: bash
         run: |
@@ -274,7 +290,7 @@ jobs:
           # above the bare one, so pip prefers it and `==2.7.1` is still
           # satisfied. On macOS and Windows the public wheel is already
           # CPU-only, so the flag changes nothing there.
-          .venv/bin/python - --extras=cpu,dev <<'PYTHON'
+          "${{ steps.venv.outputs.python }}" - --extras=cpu,dev <<'PYTHON'
           import pathlib
           import subprocess
           import sys
@@ -362,7 +378,7 @@ jobs:
           # OpenModelDB test is a scheduled job, not a pull-request check: it
           # fails when a third party's markup changes, which says nothing about
           # this commit.
-          .venv/bin/python -m pytest -m "not gpu and not network"
+          "${{ steps.venv.outputs.python }}" -m pytest -m "not gpu and not network"
 
   # There is deliberately no job here that freezes `ui_pyside/main.py` and
   # runs `scripts/verify_install.py` against the bundle. That check belongs to
