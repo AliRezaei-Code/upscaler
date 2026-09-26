@@ -4,6 +4,11 @@ The `nvidia_proc` fixture is a byte-for-byte copy of this machine's
 `/proc/driver/nvidia/gpus/*/information`: three Tesla P40s, one of them with
 `Video BIOS: ??.??.??.??.??`. Everything asserted about NVIDIA enumeration is
 asserted against that real text, not against invented input.
+
+The directory names are the PCI bus addresses with `:` replaced by `-`, because
+a colon is illegal in a Windows path and this fixture is checked out on a
+Windows runner too. The addresses themselves are in the file *contents*, and
+they still parse and sort the same.
 """
 
 from __future__ import annotations
@@ -392,7 +397,7 @@ def test_a_file_read_that_never_answers_is_abandoned(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A wedged driver can block procfs, so the read is given a deadline too."""
-    for bus in ("0000:05:00.0", "0000:06:00.0"):
+    for bus in ("0000-05-00.0", "0000-06-00.0"):
         target = tmp_path / bus / "information"
         target.parent.mkdir(parents=True)
         target.write_text((FIXTURES / "nvidia_proc" / bus / "information").read_text())
